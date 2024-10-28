@@ -64,7 +64,7 @@ breakeven_inflation_data <- fredr(
   frequency = "q"
 )
 
-individual_cpi <- read.csv("C:/Users/jeesh/Downloads/Edited_Individual_CPI.csv")
+individual_cpi <- read.csv("C:/Users/Jeeshan Huq/Downloads/2024-Capstone-main/Edited_Individual_CPI.csv")
 individual_cpi$date <- as.Date(individual_cpi$date, format = "%Y-%m-%d")
 individual_cpi <- individual_cpi %>%
   filter(date >= as.Date("2000-01-01") & date <= as.Date("2024-01-01"))
@@ -80,7 +80,7 @@ individual_cpi_agg <- cpi_long %>%
     cpi_exp_sd = sd(CPI_Value, na.rm = TRUE)
   )
 
-individual_unemp <- read.csv("C:/Users/jeesh/Downloads/Edited_Individual_UNEMP.csv")
+individual_unemp <- read.csv("C:/Users/Jeeshan Huq/Downloads/2024-Capstone-main/Edited_Individual_UNEMP.csv")
 individual_unemp$date <- as.Date(individual_unemp$date, format = "%Y-%m-%d")
 individual_unemp <- individual_unemp %>%
   filter(date >= as.Date("2000-01-01") & date <= as.Date("2024-01-01"))
@@ -96,7 +96,7 @@ individual_unemp_agg <- unemp_long %>%
     unemp_exp_sd = sd(UNEMP_Value, na.rm = TRUE)
   )
 
-individual_gdp <- read.csv("C:/Users/jeesh/Downloads/Edited_Individual_RGDP.csv")
+individual_gdp <- read.csv("C:/Users/Jeeshan Huq/Downloads/2024-Capstone-main/Edited_Individual_RGDP.csv")
 individual_gdp$date <- as.Date(individual_gdp$date, format = "%Y-%m-%d")
 individual_gdp <- individual_gdp %>%
   filter(date >= as.Date("2000-01-01") & date <= as.Date("2024-01-01"))
@@ -112,7 +112,7 @@ individual_gdp_agg <- gdp_long %>%
     rgdp_exp_sd = sd(RGDP_Value, na.rm = TRUE)
   )
 
-individual_pce <- read.csv("C:/Users/jeesh/Downloads/Edited_Individual_PCE10.csv")
+individual_pce <- read.csv("C:/Users/Jeeshan Huq/Downloads/2024-Capstone-main/Edited_Individual_PCE10.csv")
 individual_pce$date <- as.Date(individual_pce$date, format = "%Y-%m-%d")
 individual_pce <- individual_pce %>%
   filter(date >= as.Date("2000-01-01") & date <= as.Date("2024-01-01"))
@@ -144,7 +144,7 @@ comparison_data <- macro_data %>%
 
 #plot comparison between the real data and predictions.
 ggplot(comparison_data, aes(x = date)) +
-  geom_line(aes(y = inflation_yoy, color = "Actual CPI")) +
+  geom_line(aes(y = inflation_qoq, color = "Actual CPI")) +
   geom_line(aes(y = cpi_exp_median, color = "Forecasted CPI Median")) +
   labs(title = "Actual CPI vs Forecasted CPI Median",
        x = "Date",
@@ -181,7 +181,7 @@ ggplot(comparison_data, aes(x = date)) +
 
 
 #check for Bias in the forecast
-mincer_model_cpi <- lm(inflation_yoy ~ cpi_exp_median, data = comparison_data)
+mincer_model_cpi <- lm(inflation_qoq ~ cpi_exp_median, data = comparison_data)
 summary(mincer_model_cpi)
 mincer_model_gdp <- lm(gdp ~ rgdp_exp_median, data = comparison_data)
 summary(mincer_model_gdp)
@@ -192,7 +192,7 @@ summary(mincer_model_pce)
 
 #RMSE and MAE
 comparison_data <- comparison_data %>%
-  mutate(cpi_forecast_error = inflation_yoy - cpi_exp_median) %>%
+  mutate(cpi_forecast_error = inflation_qoq - cpi_exp_median) %>%
   mutate(gdp_forecast_error = gdp - rgdp_exp_median) %>%
   mutate(unemp_forecast_error = unemployment - unemp_exp_median) %>%
   mutate(inflation_forecast_error = breakeven_inflation - pce_exp_median)
@@ -220,7 +220,7 @@ error_metrics <- tibble(
 
 #VAR Modeling
 var_data <- comparison_data %>%
-  select(inflation_yoy, unemployment, gdp, breakeven_inflation, cpi_exp_median, unemp_exp_median, rgdp_exp_median,pce_exp_median) %>%
+  select(inflation_qoq, unemployment, gdp, breakeven_inflation, cpi_exp_median, unemp_exp_median, rgdp_exp_median,pce_exp_median, date) %>%
   na.omit()
 var_data$date <- as.Date(var_data$date)
 lag_order <- 2
@@ -374,6 +374,41 @@ model {
   }
 }
 "
+uc_sv_code_ppc <- "
+data {
+  int<lower=1> T;
+  real y[T];
+}
+parameters {
+  real<lower=0> sigma_trend;
+  real<lower=0> sigma_cycle;
+  vector[T] trend;
+  vector[T] cycle;
+}
+model {
+  sigma_trend ~ cauchy(0, 2.5);
+  sigma_cycle ~ cauchy(0, 2.5);
+  
+  trend[1] ~ normal(0, 1);
+  cycle[1] ~ normal(0, 1);
+  
+  for (t in 2:T) {
+    trend[t] ~ normal(trend[t-1], sigma_trend);
+    cycle[t] ~ normal(0, sigma_cycle);
+  }
+  
+  for (t in 1:T) {
+    y[t] ~ normal(trend[t] + cycle[t], 1);
+  }
+}
+generated quantities {
+  vector[T] y_rep;
+  for (t in 1:T) {
+    y_rep[t] = normal_rng(trend[t] + cycle[t], 1);
+  }
+}
+"
+
 stan_data_cpi <- list(T = length(var_data$inflation_yoy), y = var_data$inflation_yoy)
 uc_sv_model_cpi <- stan(
   model_code = uc_sv_code,
@@ -383,6 +418,16 @@ uc_sv_model_cpi <- stan(
   control = list(
     adapt_delta = 0.995,             
     max_treedepth = 15              
+  )
+)
+uc_sv_model_cpi_ppc <- stan(
+  model_code = uc_sv_code_ppc,
+  data = stan_data_cpi,
+  iter = 20000,
+  chains = 4,
+  control = list(
+    adapt_delta = 0.995,
+    max_treedepth = 15
   )
 )
 pairs(uc_sv_model_cpi, pars = c("sigma_trend", "sigma_cycle", "trend", "cycle"))
@@ -395,6 +440,16 @@ uc_sv_model_gdp <- stan(
   chains = 4,
   control = list(
     adapt_delta = .995,
+    max_treedepth = 15
+  )
+)
+uc_sv_model_gdp_ppc <- stan(
+  model_code = uc_sv_code_ppc,
+  data = stan_data_gdp,
+  iter = 20000,
+  chains = 4,
+  control = list(
+    adapt_delta = 0.995,
     max_treedepth = 15
   )
 )
@@ -411,6 +466,16 @@ uc_sv_model_unemp <- stan(
     max_treedepth = 15
   ) 
 )
+uc_sv_model_unemp_ppc <- stan(
+  model_code = uc_sv_code_ppc,
+  data = stan_data_unemp,
+  iter = 20000,
+  chains = 4,
+  control = list(
+    adapt_delta = 0.995,
+    max_treedepth = 15
+  )
+)
 pairs(uc_sv_model_unemp, pars = c("sigma_trend", "sigma_cycle", "trend", "cycle"))
 print(uc_sv_model_unemp)
 stan_data_inflation <- list(T = length(comparison_data$breakeven_inflation), y = comparison_data$breakeven_inflation)
@@ -423,6 +488,16 @@ uc_sv_model_inflation <- stan(
     adapt_delta = .995,
     max_treedepth = 15
   ) 
+)
+uc_sv_model_inflation_ppc <- stan(
+  model_code = uc_sv_code_ppc,
+  data = stan_data_inflation,
+  iter = 20000,
+  chains = 4,
+  control = list(
+    adapt_delta = 0.995,
+    max_treedepth = 15
+  )
 )
 pairs(uc_sv_model_inflation, pars = c("sigma_trend", "sigma_cycle", "trend", "cycle"))
 print(uc_sv_model_inflation)
